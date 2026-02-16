@@ -2,9 +2,9 @@ import React from "react";
 
 export const ProgressBar = ({ value, max, color, label }: { value: number, max: number, color: string, label?: string }) => (
   <div className="flex flex-col w-full">
-    {label && <div className="text-[10px] font-bold text-slate-500 mb-0.5 flex justify-between"><span>{label}</span><span>{value}/{max}</span></div>}
-    <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden border border-slate-300">
-      <div className={`h-full ${color} transition-all duration-300`} style={{ width: `${Math.min((value / max) * 100, 100)}%` }}></div>
+    {label && <div className="text-[10px] font-bold text-slate-600 mb-1 flex justify-between"><span>{label}</span><span className="font-black">{value}/{max}</span></div>}
+    <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden border border-slate-300 shadow-inner">
+      <div className={`h-full ${color} transition-all duration-500 ease-out rounded-full`} style={{ width: `${Math.min((value / max) * 100, 100)}%` }}></div>
     </div>
   </div>
 );

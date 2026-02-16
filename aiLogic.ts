@@ -6,8 +6,8 @@ import { getValidTargets } from "./rules";
 type AiAction = 
   | { type: 'flip', x: number, y: number }
   | { type: 'move', from: Position, to: Position }
-  | { type: 'drop', handIndex: number, to: Position }
-  | { type: 'wait', pos: Position };
+  | { type: 'wait', pos: Position }
+  | { type: 'surrender' };
 
 // Helper: Get effective rank (handling Rat vs Elephant)
 const getEffectiveRank = (attackerType: AnimalType, defenderType?: AnimalType): number => {
@@ -23,7 +23,8 @@ export const computeAiMove = (
   frozenUnits: {player: Player, types: AnimalType[]} | null,
   tigerStreak: number,
   evoAvailable: boolean,
-  isFirstTurn: boolean
+  isFirstTurn: boolean,
+  specialAbilitiesEnabled: boolean = true
 ): AiAction => {
   const aiPlayer: Player = 'blue';
   const enemyPlayer: Player = 'red';
@@ -62,30 +63,35 @@ export const computeAiMove = (
   const possibleMoves: {from: Position, to: Position, score: number, type: 'move'}[] = [];
   
   myPieces.forEach(({pos, piece}) => {
-    const targets = getValidTargets(pos, piece, board, frozenUnits);
+    const targets = getValidTargets(pos, piece, board, frozenUnits, specialAbilitiesEnabled);
     targets.forEach(to => {
       let score = 0;
       const targetCell = board[to.y][to.x];
       
       // Heuristic 1: Capturing (High Priority)
       if (targetCell.piece) {
-        const enemyRank = ANIMAL_RANKS[targetCell.piece.type];
-        const myRank = ANIMAL_RANKS[piece.type];
-        
-        // Instant Win: Kill Big Tiger
-        if (targetCell.piece.type === 'bigTiger') score += 10000;
-        
-        // High Value Kills
-        else if (targetCell.piece.type === 'elephant') score += 50;
-        else if (targetCell.piece.type === 'lion') score += 40;
-        else if (targetCell.piece.type === 'tiger') score += 35;
-        else score += (enemyRank * 10);
+        // Skip own pieces!
+        if (targetCell.piece.player === aiPlayer) {
+          score -= 1000; // Heavy penalty for moving to own piece
+        } else {
+          const enemyRank = ANIMAL_RANKS[targetCell.piece.type];
+          const myRank = ANIMAL_RANKS[piece.type];
+          
+          // Instant Win: Kill Big Tiger
+          if (targetCell.piece.type === 'bigTiger') score += 10000;
+          
+          // High Value Kills
+          else if (targetCell.piece.type === 'elephant') score += 50;
+          else if (targetCell.piece.type === 'lion') score += 40;
+          else if (targetCell.piece.type === 'tiger') score += 35;
+          else score += (enemyRank * 10);
 
-        // Trade Logic: Don't trade high value units for low value (unless necessary)
-        // If ranks equal, it's a trade.
-        if (myRank === enemyRank) {
-           score -= (myRank * 5); // Slight penalty for trading, prefer clean kills
-           if (piece.type === 'tiger' && evoAvailable) score -= 100; // Don't trade potential Evo Tiger
+          // Trade Logic: Don't trade high value units for low value (unless necessary)
+          // If ranks equal, it's a trade.
+          if (myRank === enemyRank) {
+             score -= (myRank * 5); // Slight penalty for trading, prefer clean kills
+             if (piece.type === 'tiger' && evoAvailable) score -= 100; // Don't trade potential Evo Tiger
+          }
         }
       } 
       // Heuristic 2: Moving to Empty
@@ -118,42 +124,8 @@ export const computeAiMove = (
     });
   });
 
-  // --- Gather Drops ---
-  const possibleDrops: {handIndex: number, to: Position, score: number, type: 'drop'}[] = [];
-  if (aiHand.length > 0 && emptyCells.length > 0) {
-     aiHand.forEach((piece, idx) => {
-        emptyCells.forEach(to => {
-           let score = 5; // Base drop value
-           
-           // Aggressive Drop: Drop near weak enemy
-           const neighbors = [[0,1], [0,-1], [1,0], [-1,0]];
-           let nearEnemy = false;
-           let threatened = false;
-
-           for (const [dx, dy] of neighbors) {
-              const nx = to.x + dx, ny = to.y + dy;
-              if (nx >=0 && nx < GRID_SIZE && ny >=0 && ny < GRID_SIZE) {
-                 const nCell = board[ny][nx];
-                 if (nCell.revealed && nCell.piece && nCell.piece.player === enemyPlayer) {
-                    nearEnemy = true;
-                    const nRank = getEffectiveRank(nCell.piece.type, piece.type);
-                    const myRank = getEffectiveRank(piece.type, nCell.piece.type);
-                    if (myRank > nRank) score += 15; // Threaten enemy
-                    if (nRank >= myRank) threatened = true;
-                 }
-              }
-           }
-           
-           if (threatened) score -= 50; // Don't drop to die
-           else if (nearEnemy) score += 10;
-
-           possibleDrops.push({handIndex: idx, to, score, type: 'drop'});
-        });
-     });
-  }
-
   // --- Combine and Sort ---
-  const allActions = [...possibleMoves, ...possibleDrops].sort((a, b) => b.score - a.score);
+  const allActions = possibleMoves.sort((a, b) => b.score - a.score);
 
   // --- Decision Tree ---
 
@@ -185,7 +157,6 @@ export const computeAiMove = (
   if (allActions.length > 0) {
       const best = allActions[0];
       if (best.type === 'move') return { type: 'move', from: best.from, to: best.to };
-      if (best.type === 'drop') return { type: 'drop', handIndex: best.handIndex, to: best.to };
   }
 
   // 4. Last Resort: Flip anything
@@ -193,7 +164,27 @@ export const computeAiMove = (
       return { type: 'flip', x: hiddenCells[0].x, y: hiddenCells[0].y };
   }
 
-  // 5. Pass (Should count as stalemate/loss eventually)
-  // Return a dummy wait or handle in game loop
+  // 5. Check if we should surrender
+  const shouldSurrender = () => {
+    if (myPieces.length === 0 && hiddenCells.length === 0) {
+      return true;
+    }
+    if (myPieces.length === 0 && aiHand.length >= 8) {
+      return true;
+    }
+    if (myPieces.length === 0 && enemyPieces.length > 0 && aiHand.length === 0) {
+      return true;
+    }
+    if (allActions.length === 0 && hiddenCells.length === 0) {
+      return true;
+    }
+    return false;
+  };
+
+  if (shouldSurrender()) {
+    return { type: 'surrender' };
+  }
+
+  // 6. Pass (Should count as stalemate/loss eventually)
   return { type: 'wait', pos: {x:0, y:0} }; // Should not happen if game logic handles stalemate
 };

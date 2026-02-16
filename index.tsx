@@ -7,24 +7,41 @@ import { getTutorialStatus, setTutorialDone } from "./storage";
 import { BoardCell } from "./BoardCell";
 import { TopBar, BottomBar } from "./HUD";
 import { TutorialOverlay, RulesModal, DexModal, StatsModal, WinnerScreen } from "./Overlays";
+import { GameLogModal } from "./GameLogModal";
 
 const App = () => {
   const {
     board, turn, redHand, blueHand, tigerStreak, frozenUnits,
-    undoCounts, winner, gameLog, isAiThinking, isFirstTurn,
+    undoCounts, winner, isDraw, gameLog, isAiThinking, isFirstTurn, gameStats,
+    specialAbilitiesEnabled, gameLogs,
     actions
   } = useGame();
 
   // UI Local State
   const [selectedPos, setSelectedPos] = useState<Position | null>(null);
-  const [dropMode, setDropMode] = useState(false);
-  const [selectedDropIdx, setSelectedDropIdx] = useState<number | null>(null);
   const [tutorialStep, setTutorialStep] = useState<number>(0);
+  const [isProcessing, setIsProcessing] = useState(false);
   
   // Modal State
   const [showRules, setShowRules] = useState(false);
   const [showDex, setShowDex] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showSurrenderConfirm, setShowSurrenderConfirm] = useState(false);
+  const [showGameLog, setShowGameLog] = useState(false);
+
+  const handleSurrender = () => {
+    if (turn) {
+      const winningPlayer = turn === 'red' ? 'blue' : 'red';
+      // We'll manually set winner since useGame doesn't have surrender action
+      window.location.reload();
+    }
+  };
+
+  const getSelectedPiece = () => {
+    if (!selectedPos) return null;
+    const cell = board[selectedPos.y][selectedPos.x];
+    return cell.piece || null;
+  };
 
   useEffect(() => {
     if (!getTutorialStatus()) {
@@ -33,24 +50,16 @@ const App = () => {
   }, []);
 
   const handleCellClick = (x: number, y: number) => {
-    if (!turn || winner || isAiThinking) return;
+    if (!turn || winner || isDraw || isAiThinking || isProcessing) return;
     if (turn === "blue") return;
 
     const cell = board[y][x];
 
-    if (dropMode && selectedDropIdx !== null) {
-      if (cell.revealed && !cell.piece) {
-        actions.saveHistory();
-        actions.executeDrop("red", selectedDropIdx, {x, y});
-        setDropMode(false);
-        setSelectedDropIdx(null);
-      }
-      return;
-    }
-
     if (!cell.revealed) {
+      setIsProcessing(true);
       actions.saveHistory();
       actions.executeFlip(x, y);
+      setTimeout(() => setIsProcessing(false), 600);
       return;
     }
 
@@ -58,24 +67,27 @@ const App = () => {
 
     if (cell.piece && cell.piece.player === turn) {
       setSelectedPos({x, y});
-      setDropMode(false);
       return;
     }
 
     if (selectedPos) {
       const startCell = board[selectedPos.y][selectedPos.x];
       if (selectedPos.x === x && selectedPos.y === y && startCell.piece?.type === "wolf") {
+         setIsProcessing(true);
          actions.saveHistory();
          actions.executeWolfWait(selectedPos);
          setSelectedPos(null);
+         setTimeout(() => setIsProcessing(false), 600);
          return;
       }
       
-      const validMoves = getValidTargets(selectedPos, startCell.piece!, board, frozenUnits);
+      const validMoves = getValidTargets(selectedPos, startCell.piece!, board, frozenUnits, specialAbilitiesEnabled);
       if (validMoves.some(p => p.x === x && p.y === y)) {
+        setIsProcessing(true);
         actions.saveHistory();
         actions.executeMove(selectedPos, {x, y});
         setSelectedPos(null);
+        setTimeout(() => setIsProcessing(false), 600);
       } else {
         setSelectedPos(null);
       }
@@ -84,7 +96,6 @@ const App = () => {
 
   const getCellHighlight = (x: number, y: number) => {
     const cell = board[y][x];
-    if (dropMode && cell.revealed && !cell.piece) return "highlight-drop cursor-pointer";
     if (!selectedPos) return "";
     
     const start = board[selectedPos.y][selectedPos.x];
@@ -93,7 +104,7 @@ const App = () => {
     // Check self (Wolf Wait)
     if (start.piece.type === "wolf" && x === selectedPos.x && y === selectedPos.y) return "ring-4 ring-blue-300";
 
-    const valid = getValidTargets(selectedPos, start.piece, board, frozenUnits);
+    const valid = getValidTargets(selectedPos, start.piece, board, frozenUnits, specialAbilitiesEnabled);
     if (valid.some(v => v.x === x && v.y === y)) {
        return cell.piece ? "highlight-capture" : "highlight-move";
     }
@@ -101,29 +112,48 @@ const App = () => {
   };
 
   return (
-    <div className="h-screen w-full flex flex-col bg-[#f0f4f8] max-w-md mx-auto relative select-none">
+    <div className="h-screen w-full flex flex-col bg-gradient-to-b from-slate-100 to-slate-200 max-w-md mx-auto relative select-none">
        <TopBar 
          turn={turn} 
          gameLog={gameLog} 
          redHand={redHand} 
          blueHand={blueHand} 
-         tigerStreak={tigerStreak} 
+         tigerStreak={tigerStreak}
+         onSurrender={handleSurrender}
        />
 
        <div className="flex-1 flex flex-col items-center justify-center p-4">
          {!turn && (
             <div className="flex flex-col gap-4">
-                <button onClick={actions.handleStartGame} className="bg-green-600 text-white px-8 py-3 rounded-xl font-bold text-xl shadow-lg animate-bounce">
-                  Start Game
-                </button>
-                <div className="flex gap-4 justify-center">
-                    <button onClick={() => setShowStats(true)} className="text-sm text-slate-600 underline">Stats</button>
-                    <button onClick={() => setTutorialStep(1)} className="text-sm text-slate-600 underline">Tutorial</button>
-                </div>
+                {specialAbilitiesEnabled === null ? (
+                    <>
+                        <h2 className="text-2xl font-bold text-slate-800 text-center mb-2">选择游戏模式</h2>
+                        <button onClick={() => actions.handleStartGame(true)} className="bg-gradient-to-r from-purple-500 to-purple-600 text-white px-8 py-4 rounded-2xl font-bold text-xl shadow-xl hover:from-purple-600 hover:to-purple-700 transition-all transform hover:scale-105">
+                          ✨ 开启特殊能力
+                        </button>
+                        <button onClick={() => actions.handleStartGame(false)} className="bg-gradient-to-r from-slate-500 to-slate-600 text-white px-8 py-4 rounded-2xl font-bold text-xl shadow-xl hover:from-slate-600 hover:to-slate-700 transition-all transform hover:scale-105">
+                          🎲 经典模式（无特殊能力）
+                        </button>
+                        <div className="flex gap-4 justify-center pt-2">
+                            <button onClick={() => setShowStats(true)} className="text-sm text-slate-600 underline hover:text-slate-800">战绩</button>
+                            <button onClick={() => setTutorialStep(1)} className="text-sm text-slate-600 underline hover:text-slate-800">教程</button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <button onClick={actions.handleStartGame} className="bg-gradient-to-r from-green-500 to-green-600 text-white px-8 py-4 rounded-2xl font-bold text-xl shadow-xl hover:from-green-600 hover:to-green-700 transition-all transform hover:scale-105">
+                          🎮 开始游戏
+                        </button>
+                        <div className="flex gap-4 justify-center">
+                            <button onClick={() => setShowStats(true)} className="text-sm text-slate-600 underline hover:text-slate-800">战绩</button>
+                            <button onClick={() => setTutorialStep(1)} className="text-sm text-slate-600 underline hover:text-slate-800">教程</button>
+                        </div>
+                    </>
+                )}
             </div>
          )}
          {turn && (
-           <div className="grid grid-cols-4 gap-3 w-full aspect-square max-w-[360px]">
+           <div className="grid grid-cols-4 gap-2 w-full aspect-square max-w-[360px] bg-slate-300 p-2 rounded-2xl shadow-xl">
               {board.map((row, y) => row.map((cell, x) => (
                 <BoardCell 
                    key={`${x}-${y}`} 
@@ -142,15 +172,12 @@ const App = () => {
        {turn && (
          <BottomBar 
             turn={turn}
-            dropMode={dropMode}
-            redHand={redHand}
             undoCount={undoCounts.red}
-            selectedDropIdx={selectedDropIdx}
+            selectedPiece={getSelectedPiece()}
             onToggleRules={() => setShowRules(true)}
             onToggleDex={() => setShowDex(true)}
             onUndo={actions.handleUndo}
-            onToggleDrop={() => { setDropMode(!dropMode); setSelectedDropIdx(null); }}
-            onSelectDropPiece={setSelectedDropIdx}
+            onToggleLog={() => setShowGameLog(true)}
          />
        )}
 
@@ -163,7 +190,8 @@ const App = () => {
        {showRules && <RulesModal onClose={() => setShowRules(false)} />}
        {showDex && <DexModal onClose={() => setShowDex(false)} />}
        {showStats && <StatsModal onClose={() => setShowStats(false)} />}
-       {winner && <WinnerScreen winner={winner} />}
+       {(winner || isDraw) && <WinnerScreen winner={isDraw ? null : winner} gameStats={gameStats} redHand={redHand} blueHand={blueHand} />}
+       {showGameLog && <GameLogModal isOpen={showGameLog} onClose={() => setShowGameLog(false)} logs={gameLogs} />}
     </div>
   );
 };
